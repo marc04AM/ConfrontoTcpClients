@@ -13,6 +13,7 @@ namespace TcpClientEvolution.Tests.EvolutionTests;
 /// - Fael: logger statico globale (Utilities.Logger), string interpolation
 /// - SiDel: logger iniettabile via Use(), ma usa ancora string interpolation ($"...")
 /// - Mb: logger iniettabile via Use(), usa template strutturati Serilog ("{Name}", "{IpAddress}")
+/// - Def: logger iniettabile via Use(), usa template strutturati Serilog (come Mb)
 ///
 /// La differenza chiave: con i template strutturati, Serilog può estrarre
 /// proprietà tipizzate (Name, IpAddress, Port) per ricerche e filtri.
@@ -150,10 +151,50 @@ public class T07_StructuredLoggingTests : IAsyncLifetime
             "Mb template strutturato deve avere proprietà Port");
     }
 
+    // ── DEF: LOGGER INIETTABILE CON TEMPLATE STRUTTURATI ─
+
+    [Fact]
+    public void Def_HaMetodoUse()
+    {
+        var useMethod = typeof(DefTcpClient).GetMethod("Use",
+            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+        Assert.NotNull(useMethod);
+    }
+
+    [Fact]
+    public async Task Def_UsaLoggerIniettato_ConTemplateStrutturati()
+    {
+        var (logger, sink) = FakeLoggerFactory.Create();
+        var client = new DefTcpClient();
+        client.Use(logger);
+
+        var acceptTask = _listener.AcceptClientAsync();
+        await client.ConnectAsync(_listener.AddressString, _listener.Port);
+        await acceptTask;
+
+        Assert.True(sink.Events.Count > 0, "Def deve loggare eventi");
+
+        var connectEvent = sink.Events.FirstOrDefault(e =>
+            e.MessageTemplate.Text.Contains("{IpAddress}"));
+        Assert.NotNull(connectEvent);
+
+        // DEF usa template strutturati (come Mb)
+        Assert.Contains("{Name}", connectEvent!.MessageTemplate.Text);
+        Assert.Contains("{IpAddress}", connectEvent.MessageTemplate.Text);
+        Assert.Contains("{Port}", connectEvent.MessageTemplate.Text);
+
+        Assert.True(connectEvent.Properties.ContainsKey("Name"),
+            "Def template strutturato deve avere proprietà Name");
+        Assert.True(connectEvent.Properties.ContainsKey("IpAddress"),
+            "Def template strutturato deve avere proprietà IpAddress");
+        Assert.True(connectEvent.Properties.ContainsKey("Port"),
+            "Def template strutturato deve avere proprietà Port");
+    }
+
     // ── CONFRONTO ────────────────────────────────────────
 
     [Fact]
-    public async Task Confronto_Logging_FaelStatico_SiDelInterpolato_MbStrutturato()
+    public async Task Confronto_Logging_FaelStatico_SiDelInterpolato_MbDefStrutturati()
     {
         var (logger, sink) = FakeLoggerFactory.Create();
 
@@ -187,11 +228,22 @@ public class T07_StructuredLoggingTests : IAsyncLifetime
 
         var mbHasStructured = sink.Events.Any(e => e.MessageTemplate.Text.Contains("{IpAddress}"));
 
+        // Def: usa Use() con template (come Mb)
+        sink.Events.Clear();
+        var def = new DefTcpClient();
+        def.Use(logger);
+        var accept4 = _listener.AcceptClientAsync();
+        await def.ConnectAsync(_listener.AddressString, _listener.Port);
+        await accept4;
+
+        var defHasStructured = sink.Events.Any(e => e.MessageTemplate.Text.Contains("{IpAddress}"));
+
         // Risultati
         Assert.True(faelEventCount > 0, "Fael logga tramite Utilities.Logger");
         Assert.False(faelHasStructured, "Fael: interpolazione, no template strutturati");
         Assert.False(sidelHasStructured, "SiDel: interpolazione, no template strutturati");
         Assert.True(mbHasStructured, "Mb: template strutturati con {IpAddress}");
+        Assert.True(defHasStructured, "Def: template strutturati con {IpAddress}");
 
         Utilities.Logger = null;
     }

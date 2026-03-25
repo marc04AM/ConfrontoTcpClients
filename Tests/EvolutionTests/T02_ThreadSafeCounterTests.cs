@@ -10,6 +10,7 @@ namespace TcpClientEvolution.Tests.EvolutionTests;
 /// T02: Dimostra la differenza di thread-safety nel contatore delle istanze.
 /// - SiDel: usa i++ (non atomico) → possibili nomi duplicati sotto concorrenza
 /// - Mb: usa Interlocked.Increment (atomico) → nomi sempre unici
+/// - Def: usa Interlocked.Increment (atomico, come Mb) → nomi sempre unici
 /// </summary>
 public class T02_ThreadSafeCounterTests
 {
@@ -75,6 +76,34 @@ public class T02_ThreadSafeCounterTests
             _ =>
             {
                 var client = new MbTcpClient();
+                names.Add(client.Name);
+            });
+
+        var uniqueCount = names.Distinct().Count();
+
+        Assert.Equal(count, uniqueCount);
+    }
+
+    // ── DEF ────────────────────────────────────────────────
+
+    [Fact]
+    public void Def_ContatoreConInterlocked_Atomico()
+    {
+        // Verifica strutturale: Def usa "_instanceCounter" con Interlocked.Increment (come Mb)
+        var hasField = ReflectionHelper.HasField(typeof(DefTcpClient), "_instanceCounter");
+        Assert.True(hasField, "DefTcpClient dovrebbe avere il campo statico '_instanceCounter' (thread-safe)");
+    }
+
+    [Fact]
+    public void Def_CreazioneConcorrente_NomiSempreUnici()
+    {
+        const int count = 2000;
+        var names = new ConcurrentBag<string>();
+
+        Parallel.For(0, count, new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount },
+            _ =>
+            {
+                var client = new DefTcpClient();
                 names.Add(client.Name);
             });
 

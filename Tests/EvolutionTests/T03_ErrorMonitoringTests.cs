@@ -11,6 +11,7 @@ namespace TcpClientEvolution.Tests.EvolutionTests;
 /// - Fael: nessun Error event, nessun ErrorsPerSecond
 /// - SiDel: ha Error event e ErrorsPerSecond, MonitorErrors usa while(Connected) senza lock
 /// - Mb: ha Error event e ErrorsPerSecond, MonitorErrors usa while(IsConnected()) con lock
+/// - Def: ha Error event e ErrorsPerSecond, MonitorErrors usa while(IsConnected()) con lock (come Mb)
 /// </summary>
 public class T03_ErrorMonitoringTests
 {
@@ -83,10 +84,32 @@ public class T03_ErrorMonitoringTests
         Assert.Equal(10, MbTcpClient.MaxErrorsPerSecond);
     }
 
+    // ── DEF: MONITORAGGIO MIGLIORATO (COME MB) ────────────
+
+    [Fact]
+    public void Def_HaEventoError()
+    {
+        var hasError = ReflectionHelper.HasEvent(typeof(DefTcpClient), "Error");
+        Assert.True(hasError, "DefTcpClient dovrebbe avere l'evento Error");
+    }
+
+    [Fact]
+    public void Def_HaErrorsPerSecond()
+    {
+        var client = new DefTcpClient();
+        Assert.Equal(0, client.ErrorsPerSecond);
+    }
+
+    [Fact]
+    public void Def_HaMaxErrorsPerSecond()
+    {
+        Assert.Equal(10, DefTcpClient.MaxErrorsPerSecond);
+    }
+
     // ── CONFRONTO ─────────────────────────────────────────
 
     [Fact]
-    public void Confronto_ErrorMonitoring_FaelNoFeature_SiDelMbSi()
+    public void Confronto_ErrorMonitoring_FaelNoFeature_SiDelMbDefSi()
     {
         Assert.False(ReflectionHelper.HasEvent(typeof(FaelTcpClient), "Error"));
         Assert.False(ReflectionHelper.HasProperty(typeof(FaelTcpClient), "ErrorsPerSecond"));
@@ -96,5 +119,8 @@ public class T03_ErrorMonitoringTests
 
         Assert.True(ReflectionHelper.HasEvent(typeof(MbTcpClient), "Error"));
         Assert.True(ReflectionHelper.HasProperty(typeof(MbTcpClient), "ErrorsPerSecond"));
+
+        Assert.True(ReflectionHelper.HasEvent(typeof(DefTcpClient), "Error"));
+        Assert.True(ReflectionHelper.HasProperty(typeof(DefTcpClient), "ErrorsPerSecond"));
     }
 }

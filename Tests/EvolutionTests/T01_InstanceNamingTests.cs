@@ -10,6 +10,7 @@ namespace TcpClientEvolution.Tests.EvolutionTests;
 /// - Fael: nessuna proprietà Name
 /// - SiDel: ha Name, ma il costruttore con parametro è buggato (nome ignorato)
 /// - Mb: ha Name, costruttore corretto
+/// - Def: ha Name, costruttore corretto (come Mb), usa nameof per il prefisso
 /// </summary>
 public class T01_InstanceNamingTests
 {
@@ -63,20 +64,39 @@ public class T01_InstanceNamingTests
         Assert.Equal("DispositivoCustom", client.Name);
     }
 
+    // ── DEF ─────────────────────────────────────────────────
+
+    [Fact]
+    public void Def_CostruttoreDefault_AssegnaNomeAutomatico()
+    {
+        var client = new DefTcpClient();
+        Assert.StartsWith("DefTcpClient_", client.Name);
+    }
+
+    [Fact]
+    public void Def_CostruttoreConNome_NomeAssegnatoCorrettamente()
+    {
+        // Come Mb, il costruttore assegna correttamente il nome
+        var client = new DefTcpClient("DispositivoCustom");
+        Assert.Equal("DispositivoCustom", client.Name);
+    }
+
     // ── CONFRONTO DIRETTO ─────────────────────────────────
 
     [Fact]
-    public void Confronto_CostruttoreConNome_SiDelBuggato_MbCorretto()
+    public void Confronto_CostruttoreConNome_SiDelBuggato_MbDefCorretti()
     {
         const string nomeDesiderato = "MioDispositivo";
 
         var sidel = new SiDelTcpClient(nomeDesiderato);
         var mb = new MbTcpClient(nomeDesiderato);
+        var def = new DefTcpClient(nomeDesiderato);
 
         // SiDel ignora il nome → bug
         Assert.NotEqual(nomeDesiderato, sidel.Name);
 
-        // Mb lo assegna correttamente → fix
+        // Mb e Def lo assegnano correttamente → fix
         Assert.Equal(nomeDesiderato, mb.Name);
+        Assert.Equal(nomeDesiderato, def.Name);
     }
 }

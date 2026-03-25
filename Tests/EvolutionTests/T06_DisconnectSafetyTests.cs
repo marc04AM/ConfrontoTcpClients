@@ -11,6 +11,7 @@ namespace TcpClientEvolution.Tests.EvolutionTests;
 /// T06: Dimostra la sicurezza del Disconnect quando I/O è in corso.
 /// - Fael/SiDel: _reader?.Dispose() senza try/catch → può lanciare InvalidOperationException
 /// - Mb: _reader?.Dispose() in try/catch → assorbe l'eccezione, disconnect completo
+/// - Def: _reader?.Dispose() in try/catch → come Mb, disconnect sempre sicuro
 /// </summary>
 public class T06_DisconnectSafetyTests : IAsyncLifetime
 {
@@ -104,12 +105,40 @@ public class T06_DisconnectSafetyTests : IAsyncLifetime
         Assert.Null(ex);
     }
 
+    // ── DEF: DISCONNECT SICURO (COME MB) ─────────────────
+
+    [Fact]
+    public void Def_Disconnect_HaTryCatchSuDispose()
+    {
+        var method = typeof(DefTcpClient).GetMethod("Disconnect",
+            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+        Assert.NotNull(method);
+    }
+
+    [Fact]
+    public async Task Def_Disconnect_ConReaderCheThrow_NonLancia()
+    {
+        var client = new DefTcpClient();
+        client.ReconnectionPolicy = new Sistec.Core.Utils.ExponentialBackoffReconnectionPolicy { ShouldReconnect = false };
+
+        var acceptTask = _listener.AcceptClientAsync();
+        await client.ConnectAsync(_listener.AddressString, _listener.Port);
+        await acceptTask;
+
+        var throwingReader = new ThrowingOnDisposeReader(new MemoryStream());
+        ReflectionHelper.SetField(client, "_reader", throwingReader);
+
+        // DEF: Disconnect NON lancia mai grazie al try/catch (come Mb)
+        var ex = Record.Exception(() => client.Disconnect());
+        Assert.Null(ex);
+    }
+
     // ── CONFRONTO ────────────────────────────────────────
 
     [Fact]
-    public async Task Confronto_DisconnectSafety_MbNonLancia()
+    public async Task Confronto_DisconnectSafety_MbDefNonLanciano()
     {
-        // Setup: entrambi connessi con reader che lancia su Dispose
+        // Setup: tutti connessi con reader che lancia su Dispose
         var fael = new FaelTcpClient();
         fael.ReconnectionPolicy = new Sistec.Core.Utils.ReconnectionPolicy { ShouldReconnect = false };
         var accept1 = _listener.AcceptClientAsync();
@@ -124,11 +153,20 @@ public class T06_DisconnectSafetyTests : IAsyncLifetime
         await accept2;
         ReflectionHelper.SetField(mb, "_reader", new ThrowingOnDisposeReader(new MemoryStream()));
 
+        var def = new DefTcpClient();
+        def.ReconnectionPolicy = new Sistec.Core.Utils.ExponentialBackoffReconnectionPolicy { ShouldReconnect = false };
+        var accept3 = _listener.AcceptClientAsync();
+        await def.ConnectAsync(_listener.AddressString, _listener.Port);
+        await accept3;
+        ReflectionHelper.SetField(def, "_reader", new ThrowingOnDisposeReader(new MemoryStream()));
+
         var faelEx = Record.Exception(() => fael.Disconnect());
         var mbEx = Record.Exception(() => mb.Disconnect());
+        var defEx = Record.Exception(() => def.Disconnect());
 
-        // Mb è sempre sicuro
+        // Mb e Def sono sempre sicuri
         Assert.Null(mbEx);
+        Assert.Null(defEx);
 
         // Fael potrebbe lanciare (il risultato dipende dall'implementazione,
         // ma la struttura del codice non protegge dal lancio)

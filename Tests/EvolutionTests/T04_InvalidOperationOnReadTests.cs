@@ -12,6 +12,7 @@ namespace TcpClientEvolution.Tests.EvolutionTests;
 /// - Fael: disconnect aggressivo → chiama Disconnect() + OnDisconnection(), ritorna NotConnected
 /// - SiDel: soft error → incrementa ErrorsPerSecond, ritorna Fail, lancia Error sopra soglia
 /// - Mb: soft error → stessa gestione di SiDel + reset _pendingReadTask
+/// - Def: soft error → come Mb (incrementa ErrorsPerSecond, Fail, reset _pendingReadTask)
 /// </summary>
 public class T04_InvalidOperationOnReadTests : IAsyncLifetime
 {
@@ -134,10 +135,36 @@ public class T04_InvalidOperationOnReadTests : IAsyncLifetime
         Assert.True(client.ErrorsPerSecond > initialErrors, "Mb deve incrementare ErrorsPerSecond");
     }
 
+    // ── DEF: SOFT ERROR (COME MB) ───────────────────────
+
+    [Fact]
+    public async Task Def_ReadAsync_InvalidOp_IncrementaErrorsERitornaFail()
+    {
+        var client = new DefTcpClient();
+        client.ReconnectionPolicy = new Sistec.Core.Utils.ExponentialBackoffReconnectionPolicy { ShouldReconnect = false };
+
+        var acceptTask = _listener.AcceptClientAsync();
+        var connectResult = await client.ConnectAsync(_listener.AddressString, _listener.Port);
+        await acceptTask;
+        Assert.True(connectResult.IsConnected);
+
+        var fakeStream = new MemoryStream();
+        var throwingReader = new ThrowingStreamReader(fakeStream);
+        ReflectionHelper.SetField(client, "_reader", throwingReader);
+
+        int initialErrors = client.ErrorsPerSecond;
+        var result = await client.ReadAsync(100);
+
+        // DEF: soft error come Mb
+        Assert.NotNull(result.Exception);
+        Assert.True(client.Connected, "Def NON deve disconnettere su InvalidOperationException");
+        Assert.True(client.ErrorsPerSecond > initialErrors, "Def deve incrementare ErrorsPerSecond");
+    }
+
     // ── CONFRONTO DIRETTO ────────────────────────────────
 
     [Fact]
-    public async Task Confronto_InvalidOp_FaelDisconnette_SiDelMbContano()
+    public async Task Confronto_InvalidOp_FaelDisconnette_SiDelMbDefContano()
     {
         // Fael
         var fael = new FaelTcpClient();
@@ -169,10 +196,21 @@ public class T04_InvalidOperationOnReadTests : IAsyncLifetime
         await mb.ReadAsync(100);
         bool mbConnectedAfter = mb.Connected;
 
-        // Fael disconnette, SiDel e Mb restano connessi
+        // Def
+        var def = new DefTcpClient();
+        def.ReconnectionPolicy = new Sistec.Core.Utils.ExponentialBackoffReconnectionPolicy { ShouldReconnect = false };
+        var accept4 = _listener.AcceptClientAsync();
+        await def.ConnectAsync(_listener.AddressString, _listener.Port);
+        await accept4;
+        ReflectionHelper.SetField(def, "_reader", new ThrowingStreamReader(new MemoryStream()));
+        await def.ReadAsync(100);
+        bool defConnectedAfter = def.Connected;
+
+        // Fael disconnette, SiDel, Mb e Def restano connessi
         Assert.False(faelConnectedAfter, "Fael: disconnette su InvalidOp");
         Assert.True(sidelConnectedAfter, "SiDel: resta connesso su InvalidOp");
         Assert.True(mbConnectedAfter, "Mb: resta connesso su InvalidOp");
+        Assert.True(defConnectedAfter, "Def: resta connesso su InvalidOp");
     }
 }
 

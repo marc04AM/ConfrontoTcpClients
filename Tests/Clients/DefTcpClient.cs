@@ -12,10 +12,9 @@ using Sistec.Core.Utils;
 namespace Sistec.Core;
 
 /// <summary>
-/// Versione definitiva del TcpClient che unisce le migliori feature di Fael, SiDel e Mb.
+/// Versione definitiva (Def): unisce le migliori feature di Fael, SiDel e Mb.
 ///
-/// Da Fael:  sintassi C# moderna, nullable annotations corrette, naming conventions consistenti,
-///           guard !Connected in ReadAsync, InvalidOperationException dedicato in WriteAsync
+/// Da Fael:  guard !Connected in ReadAsync, InvalidOperationException dedicato in WriteAsync
 /// Da Mb:    _pendingReadTask, Disconnect robusto con try/catch, Interlocked per contatore istanze,
 ///           MonitorErrors con IsConnected(), OnConnected dopo reconnect, structured logging Serilog
 /// Da SiDel: Name property, Use(ILogger), evento Error, ErrorsPerSecond monitoring
@@ -25,7 +24,7 @@ namespace Sistec.Core;
 ///           Task.WaitAsync(TimeSpan) per timeout in ReadAsync, file-scoped namespace,
 ///           using dichiarativi per CancellationTokenSource
 /// </summary>
-public class TcpClient
+public class DefTcpClient
 {
     private int _bufferLength = 2048;
     private static int _instanceCounter = 0;
@@ -46,9 +45,9 @@ public class TcpClient
     private Task<int>? _pendingReadTask;
     private char[]? _pendingBuffer;
 
-    public TcpClient() => Name = $"{nameof(TcpClient)}_{Interlocked.Increment(ref _instanceCounter) - 1}";
+    public DefTcpClient() => Name = $"{nameof(DefTcpClient)}_{Interlocked.Increment(ref _instanceCounter) - 1}";
 
-    public TcpClient(string name) : this() => Name = name;
+    public DefTcpClient(string name) : this() => Name = name;
 
     public delegate void ConnectedChangedHandler(object sender);
 
