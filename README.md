@@ -4,10 +4,11 @@
 - MB
 - FAEL
 
-## Eventi
+## Documentazione
 
-- OnConnect()
-- OnDisconnect()
+- [Valutazione comparativa dei TcpClient](evaluation.md) — analisi dettagliata per thread safety, gestione errori e qualita' del codice
+- [Confronto delle 3 implementazioni](Confronto_TcpClient.md) — confronto feature-by-feature con schema di evoluzione
+- [Release note Mb rispetto a SiDel](modifiche_Mb_rispetto_a_SiDel.md) — changelog delle modifiche applicate a Mb
 
 ## Valutazione dell'evoluzione tramite unit test
 
