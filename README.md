@@ -16,7 +16,7 @@ Il progetto `Tests/` contiene 42 unit test (xUnit, .NET 8) che ripetono gli stes
 ### Matrice di maturita'
 
 | Area | Test | Fael | SiDel | Mb |
-|------|------|------|-------|-----|
+| ------ | ------ | ------ | ------- | ----- |
 | **Naming** | T01 | Nessuna proprieta' `Name` | Ha `Name`, ma il costruttore con parametro e' buggato (assegnamento commentato) | `Name` funzionante, costruttore corretto |
 | **Thread Safety contatore** | T02 | Nessun contatore | `i++` non atomico: race condition sotto concorrenza | `Interlocked.Increment`: nomi sempre unici |
 | **Error Monitoring** | T03 | Nessun evento `Error`, nessun `ErrorsPerSecond` | Presente, ma `MonitorErrors` legge `Connected` senza lock | Presente, `MonitorErrors` usa `IsConnected()` con lock |
@@ -27,7 +27,7 @@ Il progetto `Tests/` contiene 42 unit test (xUnit, .NET 8) che ripetono gli stes
 
 ### Schema di evoluzione per ogni area
 
-```
+``` text
 Fael (base)        ->  SiDel (intermedio)       ->  Mb (maturo)
 ---                    ---                          ---
 Assente/Non gestito    Presente ma difettoso        Presente e corretto
@@ -36,11 +36,13 @@ Assente/Non gestito    Presente ma difettoso        Presente e corretto
 ### Salti evolutivi chiave
 
 **Fael -> SiDel** (aggiunta di funzionalita'):
+
 - Passa da disconnect aggressivo a gestione soft degli errori (T04)
 - Aggiunge error monitoring con `ErrorsPerSecond` e evento `Error` (T03)
 - Aggiunge naming delle istanze e logger iniettabile (T01, T07)
 
 **SiDel -> Mb** (correzione bug e robustezza):
+
 - Corregge il bug del costruttore con nome (T01)
 - Rende il contatore thread-safe con `Interlocked.Increment` (T02)
 - Introduce il pending read reuse per evitare `InvalidOperationException` da letture concorrenti su `StreamReader` (T05)
