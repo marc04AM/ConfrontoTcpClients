@@ -2,3 +2,6 @@
 /.vscode
 /.idea
 /.DS_Store
+/Tests/bin
+/Tests/obj
+Tests/obj/Debug
