@@ -1,3 +1,12 @@
+// la versione definitiva (TcpClient.cs) unifica il meglio delle tre 
+// - sintassi moderna e nullable da Fael, 
+// - robustezza e pending read da Mb, 
+// - naming e monitoring da SiDel/Mb 
+// e corregge quattro bug presenti in tutte le implementazioni originali: 
+// la race condition in Reconnect() (CTS sovrascritto senza cancellare il precedente, risolto con Cancel/Dispose + Interlocked.CompareExchange), 
+// _bufferLength statico condiviso tra istanze, MonitorErrors non riavviato dopo riconnessione, 
+// e il CancellationTokenSource non disposto nel path di successo di ConnectAsync.
+
 using System;
 using System.IO;
 using System.Net;
