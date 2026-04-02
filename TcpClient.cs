@@ -50,6 +50,9 @@ public class TcpClient
     private StreamReader? _reader;
     private StreamWriter? _writer;
 
+    // Traccia il loop MonitorErrors per evitare duplicati
+    private Task? _monitorTask;
+
     // StreamReader non supporta letture concorrenti: manteniamo il task pendente
     // e lo ri-attendiamo con il nuovo timeout invece di lanciarne uno nuovo.
     private Task<int>? _pendingReadTask;
@@ -69,7 +72,7 @@ public class TcpClient
 
     public bool Connected { get; private set; }
     public int ConnectionTimeout { get; private set; }
-    public Encoding? Encoding { get; private set; }
+    public Encoding? StreamEncoding { get; private set; }
     public string Name { get; private set; }
     public int Port { get; private set; }
     public IReconnectionPolicy ReconnectionPolicy { get; set; } = ExponentialBackoffReconnectionPolicy.Default;
@@ -79,7 +82,9 @@ public class TcpClient
 
     private void MonitorErrors()
     {
-        Task.Run(async () =>
+        // Se il loop precedente e' ancora attivo, non ne lanciamo un altro
+        if (_monitorTask != null && !_monitorTask.IsCompleted) return;
+        _monitorTask = Task.Run(async () =>
         {
             while (IsConnected())
             {
@@ -93,7 +98,7 @@ public class TcpClient
     private async Task<bool> _ReconnectAsync()
     {
         Reconnecting?.Invoke(this);
-        var result = await ConnectAsync(_ipAddress!, Port, ConnectionTimeout, Encoding);
+        var result = await ConnectAsync(_ipAddress!, Port, ConnectionTimeout, StreamEncoding);
         return result.IsConnected;
     }
 
@@ -105,12 +110,12 @@ public class TcpClient
 
     public void CancelReconnection() => _cancelReconnection?.Cancel();
 
-    public async Task<ConnectResult> ConnectAsync(string ipAddress, int port, int timeout = 10000, Encoding? encoding = null)
+    public async Task<ConnectResult> ConnectAsync(string ipAddress, int port, int timeout = 10000, Encoding? streamEncoding = null)
     {
         if (ipAddress == "") return ConnectResult.NotConnected();
         if (!IPAddress.TryParse(ipAddress, out var ip)) return ConnectResult.NotConnected();
 
-        var result = await ConnectAsync(ip, port, timeout, encoding);
+        var result = await ConnectAsync(ip, port, timeout, streamEncoding ?? Encoding.UTF8);
         if (result.IsConnected)
         {
             MonitorErrors();
@@ -119,7 +124,7 @@ public class TcpClient
         return result;
     }
 
-    public async Task<ConnectResult> ConnectAsync(IPAddress ipAddress, int port, int timeout = 10000, Encoding? encoding = null)
+    public async Task<ConnectResult> ConnectAsync(IPAddress ipAddress, int port, int timeout = 10000, Encoding? streamEncoding = null)
     {
         if (IsConnected()) return ConnectResult.AlreadyConnected();
         _ipAddress = ipAddress;
@@ -128,7 +133,7 @@ public class TcpClient
 
         Disconnect();
         _tcpClient = new System.Net.Sockets.TcpClient { NoDelay = true };
-        Encoding = encoding ?? Encoding.UTF8;
+        StreamEncoding = streamEncoding ?? Encoding.UTF8;
 
         _logger?.Information("{Name} Trying to connect to {IpAddress}:{Port}", Name, _ipAddress, Port);
         using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(ConnectionTimeout));
@@ -142,9 +147,10 @@ public class TcpClient
             ConnectionFail?.Invoke(this);
             return ConnectResult.Timeout();
         }
-        catch (IOException)
+        catch (IOException e)
         {
-            OnDisconnection();
+            _logger?.Warning("{Name} Connection IOException: {Message}", Name, e.Message);
+            Disconnect();
             ConnectionFail?.Invoke(this);
             return ConnectResult.NotConnected();
         }
@@ -164,8 +170,8 @@ public class TcpClient
         _stream = _tcpClient.GetStream();
         _bufferLength = _tcpClient.ReceiveBufferSize;
 
-        _reader = new StreamReader(_stream, Encoding);
-        _writer = new StreamWriter(_stream, Encoding) { AutoFlush = true };
+        _reader = new StreamReader(_stream, StreamEncoding!);
+        _writer = new StreamWriter(_stream, StreamEncoding!) { AutoFlush = true };
         Connected = true;
         _logger?.Information("{Name} Connected to {IpAddress}:{Port}", Name, _ipAddress, Port);
 
@@ -204,18 +210,35 @@ public class TcpClient
         if (!Connected) return ReadResult.NotConnected();
         try
         {
+            // Se il task precedente e' completato, consumiamo i suoi dati prima di lanciarne uno nuovo.
+            // Senza questo check, un task che completa tra un timeout e la chiamata successiva
+            // verrebbe sovrascritto, perdendo i dati ricevuti.
+            if (_pendingReadTask != null && _pendingReadTask.IsCompleted)
+            {
+                var pending = _pendingReadTask;
+                _pendingReadTask = null;
+                var completedCount = await pending; // non blocca, e' gia' completato
+                var completedResponse = new string(_pendingBuffer!, 0, completedCount);
+                return string.IsNullOrWhiteSpace(completedResponse)
+                    ? ReadResult.NoData()
+                    : ReadResult.Success(completedResponse);
+            }
+
             // Se una ReadAsync precedente e' ancora in volo, la ri-attendiamo:
             // StreamReader non supporta letture concorrenti.
-            if (_pendingReadTask == null || _pendingReadTask.IsCompleted)
+            if (_pendingReadTask == null)
             {
+                // Cattura locale: _reader puo' essere nullato da Disconnect() concorrente
+                var reader = _reader;
+                if (reader == null) return ReadResult.NotConnected();
                 if (_pendingBuffer == null || _pendingBuffer.Length != _bufferLength)
                     _pendingBuffer = new char[_bufferLength];
-                _pendingReadTask = _reader!.ReadAsync(_pendingBuffer, 0, _pendingBuffer.Length);
+                _pendingReadTask = reader.ReadAsync(_pendingBuffer, 0, _pendingBuffer.Length);
             }
 
             var count = await _pendingReadTask.WaitAsync(TimeSpan.FromMilliseconds(timeout));
             // WaitAsync ha completato: il task originale e' terminato
-            var response = new string(_pendingBuffer, 0, count);
+            var response = new string(_pendingBuffer!, 0, count);
             _pendingReadTask = null;
             return string.IsNullOrWhiteSpace(response)
                 ? ReadResult.NoData()
@@ -263,9 +286,10 @@ public class TcpClient
         _logger?.Debug("{Name} Reconnect({ShouldReconnect})", Name, ReconnectionPolicy.ShouldReconnect);
         if (!ReconnectionPolicy.ShouldReconnect) return;
 
-        // Fix race condition: cancella il vecchio CTS prima di sovrascriverlo
-        _cancelReconnection?.Cancel();
-        _cancelReconnection?.Dispose();
+        // Fix race condition: cancella il vecchio CTS prima di sovrascriverlo.
+        // try/catch: il Task.Run precedente potrebbe aver gia' disposto il CTS.
+        try { _cancelReconnection?.Cancel(); } catch (ObjectDisposedException) { }
+        try { _cancelReconnection?.Dispose(); } catch (ObjectDisposedException) { }
 
         var reconnectAgent = new ReconnectAgent();
         var cts = new CancellationTokenSource();
@@ -299,10 +323,13 @@ public class TcpClient
     {
         if (timeout == -1) timeout = WRITE_TIMEOUT;
         if (!Connected) return WriteResult.NotConnected();
+        // Cattura locale: _writer puo' essere nullato da Disconnect() concorrente
+        var writer = _writer;
+        if (writer == null) return WriteResult.NotConnected();
         using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(timeout));
         try
         {
-            await _writer!.WriteAsync(command.AsMemory(), cts.Token);
+            await writer.WriteAsync(command.AsMemory(), cts.Token);
             return WriteResult.Success();
         }
         catch (OperationCanceledException)
