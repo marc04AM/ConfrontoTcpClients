@@ -42,8 +42,8 @@ public class TcpClient
 {
     private int _bufferLength = 2048;
     private static int _instanceCounter = 0;
-    private static int READ_TIMEOUT = 1000;
-    private static int WRITE_TIMEOUT = 3000;
+    private const int READ_TIMEOUT = 1000;
+    private const int WRITE_TIMEOUT = 3000;
 
     private readonly Lock _lock = new();
     private CancellationTokenSource? _cancelReconnection;
@@ -105,17 +105,20 @@ public class TcpClient
     public static int MaxErrorsPerSecond = 10;
     private void MonitorErrors()
     {
-        // Se il loop precedente e' ancora attivo, non ne lanciamo un altro
-        if (_monitorTask != null && !_monitorTask.IsCompleted) return;
-        _monitorTask = Task.Run(async () =>
+        lock (_lock)
         {
-            while (IsConnected())
+            // Se il loop precedente e' ancora attivo, non ne lanciamo un altro
+            if (_monitorTask != null && !_monitorTask.IsCompleted) return;
+            _monitorTask = Task.Run(async () =>
             {
+                while (IsConnected())
+                {
+                    ErrorsPerSecond = 0;
+                    await Task.Delay(1000);
+                }
                 ErrorsPerSecond = 0;
-                await Task.Delay(1000);
-            }
-            ErrorsPerSecond = 0;
-        });
+            });
+        }
     }
 
     private async Task<bool> _ReconnectAsync()
@@ -127,6 +130,7 @@ public class TcpClient
 
     protected void OnDisconnection()
     {
+        Disconnect();
         Disconnected?.Invoke(this);
         Reconnect();
     }
@@ -147,12 +151,7 @@ public class TcpClient
         if (ipAddress == "") return ConnectResult.NotConnected();
         if (!IPAddress.TryParse(ipAddress, out var ip)) return ConnectResult.NotConnected();
 
-        var result = await ConnectAsync(ip, port, timeout, streamEncoding ?? Encoding.UTF8);
-        if (result.IsConnected)
-        {
-            MonitorErrors();
-        }
-        return result;
+        return await ConnectAsync(ip, port, timeout, streamEncoding ?? Encoding.UTF8);
     }
 
     /// <summary>
@@ -212,6 +211,7 @@ public class TcpClient
         _reader = new StreamReader(_stream, StreamEncoding!);
         _writer = new StreamWriter(_stream, StreamEncoding!) { AutoFlush = true };
         Connected = true;
+        MonitorErrors();
         _logger?.Information("{Name} Connected to {IpAddress}:{Port}", Name, _ipAddress, Port);
         OnConnected?.Invoke(this);
         return ConnectResult.Success();
@@ -235,6 +235,8 @@ public class TcpClient
             _stream = null;
             _reader = null;
             _writer = null;
+            _pendingReadTask = null;
+            _pendingBuffer = null;
         }
     }
 
@@ -295,29 +297,35 @@ public class TcpClient
             // task ancora in volo, verra' riusato alla prossima chiamata
             return ReadResult.Timeout();
         }
-        catch (IOException)
+        catch (IOException e)
         {
             _pendingReadTask = null;
+            ErrorsPerSecond++;
+            if (ErrorsPerSecond > MaxErrorsPerSecond) Error?.Invoke(this, new ErrorEventArgs(e));
             OnDisconnection();
             return ReadResult.NotConnected();
         }
         catch (ObjectDisposedException e) when (!Connected)
         {
             _pendingReadTask = null;
+            ErrorsPerSecond++;
+            if (ErrorsPerSecond > MaxErrorsPerSecond) Error?.Invoke(this, new ErrorEventArgs(e));
             _logger?.Debug("{Name} ReadAsync threw: {Message} - disconnected by user?", Name, e.Message);
             return ReadResult.Fail(e);
         }
         catch (InvalidOperationException e)
         {
             _pendingReadTask = null;
+            ErrorsPerSecond++;
+            if (ErrorsPerSecond > MaxErrorsPerSecond) Error?.Invoke(this, new ErrorEventArgs(e));
             _logger?.Debug("{Name} ReadAsync threw: InvalidOperationException {Message}", Name, e.Message);
-            Disconnect();
-            OnDisconnection();
-            return ReadResult.NotConnected();
+            return ReadResult.Fail(e);
         }
         catch (Exception e)
         {
             _pendingReadTask = null;
+            ErrorsPerSecond++;
+            if (ErrorsPerSecond > MaxErrorsPerSecond) Error?.Invoke(this, new ErrorEventArgs(e));
             var message = $"{e.Message}\n{e.StackTrace}";
             if (e.InnerException != null)
                 message = $"{message}\ninner exception:{e.InnerException.Message}\n{e.InnerException.StackTrace}";
@@ -335,14 +343,16 @@ public class TcpClient
         _logger?.Debug("{Name} Reconnect({ShouldReconnect})", Name, ReconnectionPolicy.ShouldReconnect);
         if (!ReconnectionPolicy.ShouldReconnect) return;
 
-        // Fix race condition: cancella il vecchio CTS prima di sovrascriverlo.
-        // try/catch: il Task.Run precedente potrebbe aver gia' disposto il CTS.
-        try { _cancelReconnection?.Cancel(); } catch (ObjectDisposedException) { }
-        try { _cancelReconnection?.Dispose(); } catch (ObjectDisposedException) { }
-
         var reconnectAgent = new ReconnectAgent();
         var cts = new CancellationTokenSource();
-        _cancelReconnection = cts;
+
+        // Fix race condition: sotto lock, cancella il vecchio CTS e installa il nuovo.
+        lock (_lock)
+        {
+            try { _cancelReconnection?.Cancel(); } catch (ObjectDisposedException) { }
+            try { _cancelReconnection?.Dispose(); } catch (ObjectDisposedException) { }
+            _cancelReconnection = cts;
+        }
         Task.Run(async () =>
         {
             try
@@ -358,11 +368,6 @@ public class TcpClient
             // (un nuovo Reconnect() potrebbe averlo gia' sostituito)
             Interlocked.CompareExchange(ref _cancelReconnection, null, cts);
             _logger?.Debug("{Name} Reconnection COMPLETE {Connected}, {IsConnected}", Name, Connected, IsConnected());
-            if (IsConnected())
-            {
-                MonitorErrors();
-                OnConnected?.Invoke(this);
-            }
         });
     }
 
@@ -395,19 +400,25 @@ public class TcpClient
         {
             return WriteResult.Timeout();
         }
-        catch (InvalidOperationException)
+        catch (InvalidOperationException e)
         {
+            ErrorsPerSecond++;
+            if (ErrorsPerSecond > MaxErrorsPerSecond) Error?.Invoke(this, new ErrorEventArgs(e));
             _logger?.Debug("{Name} WriteAsync threw InvalidOperationException, triggering disconnection", Name);
             OnDisconnection();
             return WriteResult.NotConnected();
         }
-        catch (IOException)
+        catch (IOException e)
         {
+            ErrorsPerSecond++;
+            if (ErrorsPerSecond > MaxErrorsPerSecond) Error?.Invoke(this, new ErrorEventArgs(e));
             OnDisconnection();
             return WriteResult.NotConnected();
         }
         catch (Exception e)
         {
+            ErrorsPerSecond++;
+            if (ErrorsPerSecond > MaxErrorsPerSecond) Error?.Invoke(this, new ErrorEventArgs(e));
             var message = $"{e.Message}\n{e.StackTrace}";
             if (e.InnerException != null)
                 message = $"{message}\ninner exception:{e.InnerException.Message}\n{e.InnerException.StackTrace}";
