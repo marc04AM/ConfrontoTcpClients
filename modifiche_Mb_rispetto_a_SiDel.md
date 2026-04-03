@@ -56,6 +56,21 @@ Se un `ReadAsync` o `WriteAsync` è in corso quando si chiama `Disconnect`, il `
 
 Aggiunto `// chiude il socket → interrompe i pending I/O` per documentare che la chiusura dello stream è intenzionale e serve a sbloccare le operazioni asincrone pendenti.
 
+## Stato nella versione definitiva
+
+Tutte le 6 modifiche di Mb sono state incorporate nella versione definitiva (`TcpClient.cs`), con ulteriori miglioramenti:
+
+| Modifica Mb | Nella versione definitiva | Note |
+| --- | --- | --- |
+| 1. Contatore `Interlocked` | Mantenuto | Identico |
+| 2. Costruttore con nome | Mantenuto | Identico |
+| 3. `_pendingReadTask` | Mantenuto | Identico, con `ReadResult.Timeout` esplicito |
+| 4. `MonitorErrors` con `IsConnected()` | Mantenuto + fix | Riavviato anche dopo riconnessione (in `ConnectAsync(IPAddress)`) |
+| 5. Disconnect try/catch | Mantenuto | Identico |
+| 6. Commento su `_stream?.Close()` | Rimosso | Non necessario nella versione definitiva |
+
+La versione definitiva aggiunge inoltre: fix race condition in `Reconnect()`, `_bufferLength` non piu' `static`, CTS dispose in `ConnectAsync`, timeout `private const`, `Lock` type (.NET 9+), e strategia ibrida per `InvalidOperationException` (soft error in Read, disconnessione in Write).
+
 ## Commit di riferimento (nel repo MB)
 
 | Commit | Descrizione |

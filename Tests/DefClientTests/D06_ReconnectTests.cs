@@ -80,7 +80,7 @@ public class D06_ReconnectTests : IAsyncLifetime
     public void ReconnectionPolicy_Default_ExponentialBackoff()
     {
         var client = new DefTcpClient();
-        Assert.IsType<ExponentialBackoffReconnectionPolicy>(client.ReconnectionPolicy);
+        Assert.IsType<ReconnectionPolicy>(client.ReconnectionPolicy);
     }
 
     [Fact]

@@ -8,7 +8,7 @@ Versione unificata che combina le migliori feature di Fael, SiDel e Mb, con fix 
 
 | Feature | Origine | Motivazione |
 | --- | --- | --- |
-| Sintassi C# moderna (`new()`, `await using`) | Fael | Codice piu' conciso e idiomatico per .NET 8 |
+| Sintassi C# moderna (`new()`, `using var`) | Fael | Codice piu' conciso e idiomatico per .NET 9+ |
 | Nullable annotations corrette (`?`) | Fael | Le dichiarazioni riflettono la reale nullabilita' a runtime, a differenza di `null!` (Mb) che sopprime i warning |
 | Naming consistente (`_bufferLength`, `_tcpClient`) | Fael | Rispetta le convenzioni .NET: `_` per campi privati, nomi descrittivi |
 | Guard `!Connected` in `ReadAsync`/`WriteAsync` | Fael | Fail-fast: evita di lanciare operazioni su stream null |
@@ -22,7 +22,7 @@ Versione unificata che combina le migliori feature di Fael, SiDel e Mb, con fix 
 | `Name` property | SiDel/Mb | Identita' dell'istanza nei log e nel debug |
 | `Use(ILogger)` | SiDel/Mb | Logger iniettabile anziche' statico globale (Fael) |
 | Evento `Error` con rate-limiting | SiDel/Mb | Notifica quando `ErrorsPerSecond` supera `MaxErrorsPerSecond` |
-| `ExponentialBackoffReconnectionPolicy` | SiDel/Mb | Backoff esponenziale anziche' policy lineare (Fael) |
+| `ReconnectionPolicy.Default` | SiDel/Mb | Policy di riconnessione configurabile (default da `Utils.ReconnectionPolicy.Default`) |
 | `ObjectDisposedException` handling | SiDel/Mb | Gestione graceful quando lo stream viene disposto durante la lettura |
 
 ---
@@ -71,7 +71,7 @@ Task.Run(async () =>
 
 **Problema**: `_ReconnectAsync` chiama `ConnectAsync(IPAddress)`, che non invoca `MonitorErrors()`. Il monitor si avvia solo in `ConnectAsync(string)`. Dopo una disconnessione il loop di `MonitorErrors` esce (perche' `IsConnected()` diventa `false`), e dopo la riconnessione non viene mai riavviato.
 
-**Fix**: aggiunta chiamata a `MonitorErrors()` nel blocco post-riconnessione di `Reconnect()`.
+**Fix**: `MonitorErrors()` viene ora chiamato in `ConnectAsync(IPAddress)` dopo la connessione riuscita. Dato che `_ReconnectAsync()` chiama `ConnectAsync(IPAddress)`, il monitor viene riavviato automaticamente anche dopo la riconnessione.
 
 ### 4. CTS in `ConnectAsync` non disposto sul path di successo
 
@@ -105,7 +105,7 @@ Il contatore usa `Interlocked.Increment` (thread-safe). Il costruttore con nome 
 | `Connected` | `bool` | Flag di connessione (senza lock) |
 | `Port` | `int` | Porta di connessione |
 | `ConnectionTimeout` | `int` | Timeout in ms per la connessione |
-| `Encoding` | `Encoding?` | Encoding usato per reader/writer (default UTF-8) |
+| `StreamEncoding` | `Encoding?` | Encoding usato per reader/writer (default UTF-8) |
 | `ReconnectionPolicy` | `IReconnectionPolicy` | Policy di riconnessione (default: exponential backoff) |
 | `ErrorsPerSecond` | `int` | Contatore errori corrente (resettato ogni secondo) |
 | `MaxErrorsPerSecond` | `static int` | Soglia oltre la quale viene invocato l'evento `Error` (default: 10) |
@@ -141,24 +141,29 @@ Il contatore usa `Interlocked.Increment` (thread-safe). Il costruttore con nome 
 ### Prima connessione
 
 ```text
-ConnectAsync(string)
+ConnectAsync(string) → parse IP
   └─ ConnectAsync(IPAddress) → connessione TCP
-       └─ successo → MonitorErrors() → OnConnected
+       ├─ successo → MonitorErrors() → OnConnected
        └─ fallimento → ConnectionFail
 ```
+
+`OnConnected` e `MonitorErrors()` sono entrambi in `ConnectAsync(IPAddress)`, non in `ConnectAsync(string)`. Questo significa che vengono invocati sia alla prima connessione che durante la riconnessione (dato che `_ReconnectAsync` chiama `ConnectAsync(IPAddress)`).
 
 ### Disconnessione e riconnessione
 
 ```text
 errore I/O in ReadAsync/WriteAsync
   └─ OnDisconnection()
+       ├─ Disconnect()
        ├─ Disconnected (evento)
        └─ Reconnect()
             └─ Task.Run → ReconnectAgent
                  └─ _ReconnectAsync() → Reconnecting (evento) → ConnectAsync(IPAddress)
-                      └─ successo → MonitorErrors() → OnConnected
+                      ├─ successo → MonitorErrors() → OnConnected
                       └─ fallimento → ritenta secondo ReconnectionPolicy
 ```
+
+> **Nota**: a differenza di SiDel/Mb dove `OnConnected` dopo riconnessione e' invocato esplicitamente in `Reconnect()`, qui segue il pattern Fael: `OnConnected` e' dentro `ConnectAsync(IPAddress)` e viene chiamato automaticamente.
 
 ### Ciclo di lettura (a carico del chiamante)
 
@@ -187,29 +192,49 @@ while (client.IsConnected())
 
 | Eccezione | Comportamento |
 | --- | --- |
+| `TimeoutException` | Task di lettura resta in volo (riusato alla chiamata successiva), `ReadResult.Timeout` |
 | `IOException` | `OnDisconnection()` → riconnessione automatica |
 | `ObjectDisposedException` (quando `!Connected`) | Log + `ReadResult.Fail` — disconnessione volontaria dell'utente |
-| `InvalidOperationException` | `ErrorsPerSecond++`, evento `Error` se soglia superata, `ReadResult.Fail` |
+| `InvalidOperationException` | **Soft error**: `ErrorsPerSecond++`, evento `Error` se soglia superata, `ReadResult.Fail` — **no disconnessione** |
 | Altre | Log con stacktrace + inner exception, `ReadResult.Fail` |
 
 ### WriteAsync
 
 | Eccezione | Comportamento |
 | --- | --- |
-| `InvalidOperationException` | Log + `OnDisconnection()` → riconnessione automatica |
+| `OperationCanceledException` | `WriteResult.Timeout` (timeout via `CancellationToken`) |
+| `InvalidOperationException` | **Disconnessione**: Log + `OnDisconnection()` → riconnessione automatica |
 | `IOException` | `OnDisconnection()` → riconnessione automatica |
 | Altre | Log con stacktrace + inner exception, `WriteResult.Fail` |
+
+### Strategia ibrida per `InvalidOperationException`
+
+La versione definitiva adotta un approccio **ibrido** rispetto agli originali:
+
+- **ReadAsync** → **soft error** (come Mb): il meccanismo `_pendingReadTask` permette di recuperare senza riconnessione, quindi l'errore viene solo conteggiato
+- **WriteAsync** → **disconnessione** (come Fael): non esiste un meccanismo di pending write, lo stream e' compromesso e la riconnessione e' necessaria
 
 ### Pending Read — protezione letture concorrenti
 
 `StreamReader.ReadAsync()` non supporta letture concorrenti. Se una `ReadAsync` va in timeout, il task di lettura resta in volo. Alla chiamata successiva, anziche' crearne uno nuovo (che causerebbe `InvalidOperationException`), viene **riutilizzato** il task pendente con un nuovo timeout:
 
 ```csharp
-if (_pendingReadTask == null || _pendingReadTask.IsCompleted)
+// 1. Se il task precedente e' completato, consuma i dati prima di lanciarne uno nuovo
+if (_pendingReadTask != null && _pendingReadTask.IsCompleted)
+{
+    var completedCount = await _pendingReadTask;
+    _pendingReadTask = null;
+    return new string(_pendingBuffer!, 0, completedCount);
+}
+
+// 2. Se non c'e' nessun task in volo, ne crea uno nuovo
+if (_pendingReadTask == null)
 {
     _pendingReadTask = _reader!.ReadAsync(_pendingBuffer, 0, _pendingBuffer.Length);
 }
-// ri-attende il task esistente con il nuovo timeout
+
+// 3. Ri-attende il task (nuovo o esistente) con il timeout corrente
+var count = await _pendingReadTask.WaitAsync(TimeSpan.FromMilliseconds(timeout));
 ```
 
 ---
@@ -246,7 +271,11 @@ if (_pendingReadTask == null || _pendingReadTask.IsCompleted)
 | Dispose sicuro in Disconnect | No | No | **Si** | **Si** |
 | Error monitoring thread-safe | No | Parziale | **Si** | **Si** |
 | OnConnected dopo reconnect | No (bug) | **Si** | **Si** | **Si** |
+| `InvalidOpEx` in ReadAsync | Disconnessione | Soft error | Soft error | **Soft error** (Mb) |
+| `InvalidOpEx` in WriteAsync | Disconnessione | Soft error | Soft error | **Disconnessione** (Fael) |
+| Timeout costanti | `public static` | `public static` | `private static` | **`private const`** |
 | MonitorErrors dopo reconnect | No | No | No | **Si** (fix) |
 | `_bufferLength` per istanza | No | No | No | **Si** (fix) |
 | Race condition Reconnect | Si | Si | Si | **No** (fix) |
 | CTS dispose in ConnectAsync | No | No | No | **Si** (fix) |
+| Lock type (.NET 9+) | `object` | `object` | `object` | **`Lock`** |

@@ -2,16 +2,17 @@
 
 ## Panoramica
 
-| Caratteristica | _Fael.cs | _SiDel.cs | _Mb.cs |
-| --- | --- | --- | --- |
-| **Namespace** | `Sistec.Core.Devices` | `Sistec.Core.Devices` | `Sistec.Core` |
-| **Using extra** | - | - | `Sistec.Asyril.Utils` |
-| **Nullable** | Si (C# moderno, `?`) | No (stile pre-nullable) | Si (C# moderno, `?`) |
-| **Logger** | `Utilities.Logger` (statico) | `ILogger _logger` (istanza) | `ILogger _logger` (istanza) |
-| **Nome istanza** | Nessuno | `Name` (con contatore `i++`) | `Name` (con `_instanceCounter` thread-safe) |
-| **Evento Error** | No | Si | Si |
-| **MonitorErrors** | No | Si | Si |
-| **Pending Read** | No | No | Si |
+| Caratteristica | _Fael.cs | _SiDel.cs | _Mb.cs | **Definitivo** |
+| --- | --- | --- | --- | --- |
+| **Namespace** | `Sistec.Core.Devices` | `Sistec.Core.Devices` | `Sistec.Core` | `Sistec.Core` |
+| **Using extra** | - | - | `Sistec.Asyril.Utils` | - |
+| **Nullable** | Si (C# moderno, `?`) | No (stile pre-nullable) | Si (C# moderno, `?`) | Si (`?`, da Fael) |
+| **Logger** | `Utilities.Logger` (statico) | `ILogger _logger` (istanza) | `ILogger _logger` (istanza) | `ILogger` (istanza, da Mb) |
+| **Nome istanza** | Nessuno | `Name` (con contatore `i++`) | `Name` (con `_instanceCounter` thread-safe) | `Name` (`Interlocked`, da Mb) |
+| **Evento Error** | No | Si | Si | Si |
+| **MonitorErrors** | No | Si | Si | Si (con fix: anche dopo reconnect) |
+| **Pending Read** | No | No | Si | Si (da Mb) |
+| **Lock type** | `object` | `object` | `object` | `Lock` (.NET 9+) |
 
 ---
 
@@ -22,11 +23,11 @@
 
 ## 2. Naming e identificazione istanze
 
-| | _Fael | _SiDel | _Mb |
-| --- | --- | --- | --- |
-| Proprietà `Name` | Assente | Presente | Presente |
-| Contatore istanze | Nessuno | `static int i = 0` (non thread-safe, `i++`) | `static int _instanceCounter` (thread-safe, `Interlocked.Increment`) |
-| Costruttore con nome | Assente | Presente ma **il parametro `name` viene ignorato** (commentato) | Presente e **funzionante** (`Name = name`) |
+| | _Fael | _SiDel | _Mb | **Definitivo** |
+| --- | --- | --- | --- | --- |
+| Proprietà `Name` | Assente | Presente | Presente | Presente |
+| Contatore istanze | Nessuno | `static int i = 0` (non thread-safe, `i++`) | `static int _instanceCounter` (thread-safe, `Interlocked.Increment`) | `Interlocked.Increment` (da Mb) |
+| Costruttore con nome | Assente | Presente ma **il parametro `name` viene ignorato** (commentato) | Presente e **funzionante** (`Name = name`) | Funzionante (da Mb) |
 
 **Nota importante**: in `_SiDel.cs` il costruttore `TcpClient(string name)` ha il corpo commentato (`// => Name = name;`), quindi il nome passato viene scartato.
 
@@ -50,18 +51,23 @@
 
 ### Gestione eccezioni in ReadAsync
 
-| Eccezione | _Fael | _SiDel | _Mb |
-| --- | --- | --- | --- |
-| `IOException` | Chiama `Disconnect()` + `OnDisconnection()` | Solo `OnDisconnection()` | Solo `OnDisconnection()` |
-| `InvalidOperationException` | Chiama `Disconnect()` + `OnDisconnection()`, ritorna `NotConnected` | Incrementa `ErrorsPerSecond`, ritorna `Fail` | Incrementa `ErrorsPerSecond`, ritorna `Fail` |
-| `ObjectDisposedException` | Non gestita separatamente | Gestita con `when (!Connected)` | Gestita con `when (!Connected)` |
-
-**Differenza critica**: in `_Fael`, una `InvalidOperationException` durante la lettura causa disconnessione e riconnessione. In `_SiDel`/`_Mb` viene trattata come errore soft (contatore errori) senza disconnessione, a meno che non superi `MaxErrorsPerSecond`.
+| Eccezione | _Fael | _SiDel | _Mb | **Definitivo** |
+| --- | --- | --- | --- | --- |
+| `TimeoutException` | N/A (no pending) | N/A (no pending) | Task in volo, `ReadResult.Timeout` | Task in volo, `ReadResult.Timeout` |
+| `IOException` | `Disconnect()` + `OnDisconnection()` | Solo `OnDisconnection()` | Solo `OnDisconnection()` | `OnDisconnection()` |
+| `InvalidOperationException` | `Disconnect()` + `OnDisconnection()`, ritorna `NotConnected` | `ErrorsPerSecond++`, ritorna `Fail` | `ErrorsPerSecond++`, ritorna `Fail` | **Soft error** (`ErrorsPerSecond++`, `Fail`) — come Mb |
+| `ObjectDisposedException` | Non gestita separatamente | Gestita con `when (!Connected)` | Gestita con `when (!Connected)` | Gestita con `when (!Connected)` |
 
 ### Gestione eccezioni in WriteAsync
 
-- **_Fael**: cattura separatamente `InvalidOperationException` (con `OnDisconnection`) e `IOException`
-- **_SiDel** e **_Mb**: catturano solo `IOException` + un generico `Exception`, con logging dettagliato (messaggio + stack trace + inner exception)
+| Eccezione | _Fael | _SiDel | _Mb | **Definitivo** |
+| --- | --- | --- | --- | --- |
+| `OperationCanceledException` | N/A | N/A | N/A | `WriteResult.Timeout` (CancellationToken) |
+| `InvalidOperationException` | `OnDisconnection()` | Catch generico, no disconnessione | Catch generico, no disconnessione | **Disconnessione** (`OnDisconnection()`) — come Fael |
+| `IOException` | `OnDisconnection()` | `OnDisconnection()` | `OnDisconnection()` | `OnDisconnection()` |
+| Altre | `WriteResult.Fail` | Log dettagliato + `Fail` | Log dettagliato + `Fail` | Log dettagliato + `Fail` |
+
+**Strategia ibrida della versione definitiva**: in ReadAsync `InvalidOperationException` e' un **soft error** (come Mb) perche' il meccanismo `_pendingReadTask` permette il recovery. In WriteAsync e' una **disconnessione** (come Fael) perche' senza pending write lo stream e' compromesso.
 
 ## 5. Pending Read (solo _Mb)
 
@@ -76,11 +82,11 @@ Se una `ReadAsync` va in timeout, il task di lettura non viene abbandonato. Alla
 
 ## 6. Connessione e evento OnConnected
 
-| | _Fael | _SiDel | _Mb |
-| --- | --- | --- | --- |
-| `OnConnected` invocato in | `ConnectAsync(IPAddress)` (alla fine) | `ConnectAsync(string)` (dopo il risultato) | `ConnectAsync(string)` (dopo il risultato) |
-| `MonitorErrors` avviato in | Mai | `ConnectAsync(string)` | `ConnectAsync(string)` |
-| Dopo riconnessione | `OnConnected` invocato (perché `_ReconnectAsync` chiama `ConnectAsync(IPAddress)` che lo contiene) | `OnConnected` invocato nel `Reconnect` | `OnConnected` invocato nel `Reconnect` |
+| | _Fael | _SiDel | _Mb | **Definitivo** |
+| --- | --- | --- | --- | --- |
+| `OnConnected` invocato in | `ConnectAsync(IPAddress)` (alla fine) | `ConnectAsync(string)` (dopo il risultato) | `ConnectAsync(string)` (dopo il risultato) | `ConnectAsync(IPAddress)` (come Fael) |
+| `MonitorErrors` avviato in | Mai | `ConnectAsync(string)` | `ConnectAsync(string)` | `ConnectAsync(IPAddress)` (fix) |
+| Dopo riconnessione | `OnConnected` invocato (perché `_ReconnectAsync` chiama `ConnectAsync(IPAddress)` che lo contiene) | `OnConnected` invocato nel `Reconnect` | `OnConnected` invocato nel `Reconnect` | `OnConnected` invocato automaticamente (come Fael) |
 
 **Differenza critica**: in `_Fael`, `OnConnected` viene invocato dentro `ConnectAsync(IPAddress)`, il che significa che viene chiamato anche durante la riconnessione (perche `_ReconnectAsync` chiama `ConnectAsync`). In `_SiDel`/`_Mb`, `OnConnected` e invocato in `ConnectAsync(string)` per la prima connessione e in `Reconnect()` per le successive — ma `ConnectAsync(IPAddress)` non lo invoca.
 
@@ -135,13 +141,13 @@ errore I/O o eccezione → OnDisconnection() → Disconnected?.Invoke(this) → 
 
 La differenza sta in **quali eccezioni** scatenano la disconnessione:
 
-| Eccezione | _Fael | _SiDel /_Mb |
-| --- | --- | --- |
-| `IOException` (Read/Write) | `OnDisconnection()` | `OnDisconnection()` |
-| `InvalidOperationException` (Read) | `Disconnect()` + `OnDisconnection()`, ritorna `NotConnected` | **No disconnessione** — solo `ErrorsPerSecond++`, ritorna `Fail` |
-| `InvalidOperationException` (Write) | `OnDisconnection()` | **No disconnessione** — ritorna `WriteResult.Fail(e)` |
+| Eccezione | _Fael | _SiDel/_Mb | **Definitivo** |
+| --- | --- | --- | --- |
+| `IOException` (Read/Write) | `OnDisconnection()` | `OnDisconnection()` | `OnDisconnection()` |
+| `InvalidOperationException` (Read) | `Disconnect()` + `OnDisconnection()`, ritorna `NotConnected` | **No disconnessione** — solo `ErrorsPerSecond++`, ritorna `Fail` | **Soft error** (come Mb) |
+| `InvalidOperationException` (Write) | `OnDisconnection()` | **No disconnessione** — ritorna `WriteResult.Fail(e)` | **Disconnessione** (come Fael) |
 
-**_Fael** e la piu aggressiva: qualsiasi `InvalidOperationException` causa disconnessione e riconnessione. **_SiDel** e **_Mb** la trattano come errore soft (contatore errori), con l'evento `Error` invocato solo se `ErrorsPerSecond > MaxErrorsPerSecond`.
+**_Fael** e la piu aggressiva: qualsiasi `InvalidOperationException` causa disconnessione e riconnessione. **_SiDel** e **_Mb** la trattano come errore soft (contatore errori). La **versione definitiva** adotta un approccio ibrido: soft error in lettura (dove `_pendingReadTask` permette il recovery), disconnessione in scrittura (dove lo stream e' irrecuperabile).
 
 ### Messaggi (Read/Write) — nessun evento dedicato
 
@@ -180,17 +186,24 @@ _Fael (base) → _SiDel (aggiunge naming, error monitoring, logger di istanza)
                    → _Mb (aggiunge pending read, logging strutturato, dispose sicuro, thread safety)
 ```
 
-| Miglioria | _Fael | _SiDel | _Mb |
-| --- | :---: | :---: | :---: |
-| Logger di istanza iniettabile | - | X | X |
-| Nome istanza | - | X | X |
-| Contatore thread-safe | - | - | X |
-| Costruttore con nome funzionante | - | - | X |
-| Monitoraggio errori/secondo | - | X | X |
-| Pending read (no read concorrenti) | - | - | X |
-| Logging strutturato Serilog | - | - | X |
-| Dispose sicuro nel Disconnect | - | - | X |
-| MonitorErrors thread-safe | - | - | X |
-| Backoff esponenziale riconnessione | - | X | X |
+| Miglioria | _Fael | _SiDel | _Mb | **Definitivo** |
+| --- | :---: | :---: | :---: | :---: |
+| Logger di istanza iniettabile | - | X | X | X |
+| Nome istanza | - | X | X | X |
+| Contatore thread-safe | - | - | X | X |
+| Costruttore con nome funzionante | - | - | X | X |
+| Monitoraggio errori/secondo | - | X | X | X |
+| Pending read (no read concorrenti) | - | - | X | X |
+| Logging strutturato Serilog | - | - | X | X |
+| Dispose sicuro nel Disconnect | - | - | X | X |
+| MonitorErrors thread-safe | - | - | X | X |
+| Backoff esponenziale riconnessione | - | X | X | X |
+| MonitorErrors dopo reconnect | - | - | - | X (fix) |
+| `_bufferLength` per istanza | - | - | - | X (fix) |
+| Race condition Reconnect fix | - | - | - | X (fix) |
+| CTS dispose in ConnectAsync | - | - | - | X (fix) |
+| `InvalidOpEx` Write → disconnessione | X | - | - | X (ibrido) |
+| Lock type (.NET 9+) | - | - | - | X |
+| Timeout `private const` | - | - | - | X |
 
-**`_Mb.cs` rappresenta la versione piu matura e robusta**, con le migliori pratiche di thread safety, gestione degli stream asincroni e logging strutturato.
+**`_Mb.cs` rappresenta la versione piu matura tra gli originali**. La **versione definitiva** unisce il meglio di tutti e tre, corregge 4 bug comuni e adotta una strategia ibrida per `InvalidOperationException` (soft error in lettura, disconnessione in scrittura).
