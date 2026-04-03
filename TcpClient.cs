@@ -119,7 +119,6 @@ public class TcpClient
         if (result.IsConnected)
         {
             MonitorErrors();
-            OnConnected?.Invoke(this);
         }
         return result;
     }
@@ -174,7 +173,7 @@ public class TcpClient
         _writer = new StreamWriter(_stream, StreamEncoding!) { AutoFlush = true };
         Connected = true;
         _logger?.Information("{Name} Connected to {IpAddress}:{Port}", Name, _ipAddress, Port);
-
+        OnConnected?.Invoke(this);
         return ConnectResult.Success();
     }
 
@@ -264,11 +263,10 @@ public class TcpClient
         catch (InvalidOperationException e)
         {
             _pendingReadTask = null;
-            ErrorsPerSecond++;
             _logger?.Debug("{Name} ReadAsync threw: InvalidOperationException {Message}", Name, e.Message);
-            if (ErrorsPerSecond > MaxErrorsPerSecond)
-                Error?.Invoke(this, new ErrorEventArgs(e));
-            return ReadResult.Fail(e);
+            Disconnect();
+            OnDisconnection();
+            return ReadResult.NotConnected();
         }
         catch (Exception e)
         {
