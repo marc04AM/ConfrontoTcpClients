@@ -1,8 +1,8 @@
 {
   "version": 2,
-  "dgSpecHash": "LW9eehYi3lw=",
+  "dgSpecHash": "ST75EmayfPg=",
   "success": true,
-  "projectFilePath": "C:\\Users\\Sistec 32\\OneDrive - Sistec srl\\Desktop\\ConfrontoTcpClients\\Tests\\TcpClientEvolution.Tests.csproj",
+  "projectFilePath": "D:\\1_sviluppo_software\\ConfrontoTcpClients\\Tests\\TcpClientEvolution.Tests.csproj",
   "expectedPackageFiles": [
     "C:\\Users\\Sistec 32\\.nuget\\packages\\microsoft.codecoverage\\17.9.0\\microsoft.codecoverage.17.9.0.nupkg.sha512",
     "C:\\Users\\Sistec 32\\.nuget\\packages\\microsoft.net.test.sdk\\17.9.0\\microsoft.net.test.sdk.17.9.0.nupkg.sha512",

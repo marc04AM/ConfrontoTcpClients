@@ -252,6 +252,25 @@ public class TcpClient
         }
     }
 
+    /// <summary>
+    /// Read a frame asynchronously from the TCP stream into a reusable char buffer, with timeout support.
+    /// </summary>
+    /// <param name="timeout">Read timeout in milliseconds; -1 (default) uses <see cref="READ_TIMEOUT"/>. Must be non-negative or -1.</param>
+    /// <returns>
+    /// A <see cref="ReadResult"/> indicating success (data received), no data (empty frame), timeout, connection loss, or an exception.
+    /// If the read times out, the underlying task remains in flight and is automatically reused on the next call.
+    /// </returns>
+    /// <remarks>
+    /// StreamReader does not support concurrent reads. This method maintains a <c>_pendingReadTask</c> that is reused across calls to handle the following pattern:
+    /// (1) If a previous task completed between calls, its data is consumed before a new read starts.
+    /// (2) If a previous task is still in flight, this call awaits it instead of starting a new read.
+    /// (3) On timeout, the task remains active for reuse on the next call.
+    /// On I/O failure, <see cref="OnDisconnection"/> is invoked and the client transitions to disconnected state.
+    /// Increments <see cref="ErrorsPerSecond"/>; fires the <see cref="Error"/> event if the count exceeds <see cref="MaxErrorsPerSecond"/>.
+    /// HMI -> PLC
+    /// </remarks>
+    /// <exception cref="TimeoutException">Thrown internally during cancellation logic; caught and converted to <see cref="ReadResult.Timeout()"/>.</exception>
+
     public async Task<ReadResult> ReadAsync(int timeout = -1)
     {
         if (timeout == -1) timeout = READ_TIMEOUT;
